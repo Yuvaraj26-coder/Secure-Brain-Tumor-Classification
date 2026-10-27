@@ -1,0 +1,5 @@
+fhe_brain_tumor/
+  config.py, data.py, model.py, train.py, evaluate.py
+  fhe_context.py, client.py, server.py, benchmark.py
+  tests/
+analysis.ipynb  summary.pdf  README.md  requirements.txt  artifacts/

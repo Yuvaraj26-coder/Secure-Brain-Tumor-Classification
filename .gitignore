@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.aider*
+data/
+*.zip
+*.pt
+*.bin
+.aider.chat.history.md
+.aider.input.history
