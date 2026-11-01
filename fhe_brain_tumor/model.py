@@ -4,6 +4,46 @@ import torch.nn as nn
 from typing import Tuple, Dict, Any, List
 from .config import CONFIG
 
+class FHEOptimizedCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # TWEAK 4 (Shallowing): Reduced to a single conv layer to save multiplicative depth
+        self.conv = nn.Conv2d(1, 4, kernel_size=3, stride=2, padding=1)
+        self.bn = nn.BatchNorm2d(4)
+        # Average pooling instead of Max pooling for FHE compatibility
+        self.avg_pool = nn.AvgPool2d(kernel_size=2)
+        # TWEAK 1 Prep: Small linear layer for diagonal evaluation
+        self.fc = nn.Linear(4 * 7 * 7, 4) 
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        x = x ** 2  # x^2 activation function
+        x = self.avg_pool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
+def fuse_conv_bn_weights(conv, bn):
+    """
+    TWEAK 3: Layer Folding (Operator Fusion)
+    Fuses Conv2d and BatchNorm2d weights into a single plaintext filter.
+    """
+    w_conv = conv.weight.data
+    b_conv = conv.bias.data if conv.bias is not None else torch.zeros(w_conv.size(0))
+    
+    w_bn = bn.weight.data
+    b_bn = bn.bias.data
+    bn_var = bn.running_var
+    bn_mean = bn.running_mean
+    bn_eps = bn.eps
+    
+    multiplier = w_bn / torch.sqrt(bn_var + bn_eps)
+    fused_weight = w_conv * multiplier.view(-1, 1, 1, 1)
+    fused_bias = (b_conv - bn_mean) * multiplier + b_bn
+    
+    return fused_weight, fused_bias
+
 class SquareActivation(nn.Module):
     """Square activation function f(x) = x^2, strictly polynomial for CKKS FHE."""
     
