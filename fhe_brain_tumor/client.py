@@ -61,29 +61,43 @@ class Client:
         image_source: Union[str, Image.Image, torch.Tensor]
     ) -> Tuple[bytes, int, int]:
         """
-        Encode image using ts.im2col_encoding with model's kernel (7x7) and stride (3).
-        Returns:
-          serialized_ciphertext: bytes representing the encrypted image payload
-          windows_nb: number of sliding windows (64 for 28x28 with k=7, s=3)
-          payload_size_bytes: size in bytes of the serialized ciphertext
+        TWEAK 2: Multi-Window SIMD Packing
+        Packs multiple convolution windows into a single TenSEAL CKKS vector 
+        utilizing the 2048 available slots from the 4096 degree polynomial.
         """
-        tensor = self.preprocess_image(image_source)
-        # 2D grayscale image as list of lists
-        image_2d = tensor[0].tolist()
+        import torch.nn.functional as F
         
-        # TenSEAL im2col_encoding
-        # Note: encrypt using public context to simulate true client encryption
-        enc_vec, windows_nb = ts.im2col_encoding(
-            self.public_context,
-            image_2d,
-            kernel_n_rows=CONFIG.conv_kernel_size,
-            kernel_n_cols=CONFIG.conv_kernel_size,
-            stride=CONFIG.conv_stride
-        )
+        tensor = self.preprocess_image(image_source)
+        
+        # Targeting the new Tweak 4 shallow model: kernel=3, stride=2
+        kernel_size = 3
+        stride = 2
+        
+        # Flatten sliding windows using PyTorch's unfold (im2col)
+        # tensor shape is (1, 28, 28). unfold requires (1, 1, 28, 28)
+        windows = F.unfold(tensor.unsqueeze(0), kernel_size=kernel_size, stride=stride)
+        windows = windows.transpose(1, 2).squeeze(0) # Shape: (Num_Windows, Kernel_Elements)
+        windows_nb = windows.shape[0]
+        
+        # Pack into a flat 1D list
+        packed_plaintext = []
+        for i in range(windows_nb):
+            packed_plaintext.extend(windows[i].tolist())
+            
+        # A poly_modulus_degree of 4096 provides exactly 2048 slots
+        slot_count = 2048
+        if len(packed_plaintext) < slot_count:
+            packed_plaintext += [0.0] * (slot_count - len(packed_plaintext))
+        elif len(packed_plaintext) > slot_count:
+            raise ValueError("Too many windows to pack into a single 4096-degree ciphertext!")
+            
+        # Encrypt all windows in one single O(N log N) operation using public context
+        enc_vec = ts.ckks_vector(self.public_context, packed_plaintext)
         
         serialized_bytes = enc_vec.serialize()
         payload_size = len(serialized_bytes)
-        logger.debug("Encrypted image: windows=%d, size=%d bytes", windows_nb, payload_size)
+        logger.debug("Encrypted image (packed): windows=%d, size=%d bytes", windows_nb, payload_size)
+        
         return serialized_bytes, windows_nb, payload_size
 
     def encrypt_vector(self, vector: Union[List[float], np.ndarray, torch.Tensor]) -> ts.CKKSVector:
